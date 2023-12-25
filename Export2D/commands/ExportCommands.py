@@ -1,5 +1,6 @@
 import importlib
 import sys
+from pathlib import Path
 
 import adsk.core
 import adsk.fusion
@@ -15,72 +16,61 @@ def check_dependency(module_name: str, dependency_name: str):
     test_dir = os.path.join(config.lib_path, module_name)
     success = True
     if not os.path.exists(test_dir):
-        success = apper.Fusion360PipInstaller.install_from_list([dependency_name], config.lib_path)
+        success = apper.Fusion360PipInstaller.install_from_list(
+            [dependency_name], config.lib_path
+        )
 
     if not success:
-        raise ImportError(f'Unable to install module {module_name}')
+        raise ImportError(f"Unable to install module {module_name}")
 
 
 @apper.lib_import(config.lib_path)
-def add_to_dxf(file_name, dxf_option, target_dxf, target_name):
-    check_dependency('ezdxf', 'ezdxf')
+def add_to_dxf(dxf_file_path, dxf_option, target_drawing):
+    check_dependency("ezdxf", "ezdxf")
     import ezdxf
-    import ezdxf.entities
     from ezdxf.addons import Importer
 
-    source_dxf = ezdxf.readfile(file_name)
-    obj_name = file_name[file_name.rfind(os.path.pathsep):-4]
+    dwg = ezdxf.readfile(dxf_file_path)
+    # obj_name = file_name[dxf_file_path.rfind(os.path.pathsep) : -4]
+    obj_name = Path(dxf_file_path).stem
+    # obj_name = dxf_file_path.split("_")[0]
 
-    if dxf_option == 'Blocks':
-        # new_block = source_dxf.blocks.new(name=obj_name)
-        # source_msp = source_dxf.modelspace()
-        #
-        # entity: ezdxf.entities.DXFGraphic
-        # for entity in source_dxf.entities:
-        #     # source_msp.unlink_entity(entity)
-        #     entity.unlink_from_layout()
-        #     new_block.add_entity(entity)
-        # source_msp.add_blockref(obj_name, (0, 0))
+    if dxf_option == "Blocks":
+        block = dwg.blocks.new(name=obj_name)
+        for entity in dwg.entities:
+            dwg.modelspace().unlink_entity(entity)
+            block.add_entity(entity)
 
-        new_block = target_dxf.blocks.new(name=target_name)
-        importer = Importer(source_dxf, target_dxf)
-        importer.import_entities(source_dxf.modelspace(), new_block)
-        importer.finalize()
+    elif dxf_option == "Layers":
+        for e, entity in enumerate(dwg.entities):
+            layer_name = f"{obj_name}_{e}_layer"
+            target_drawing.layers.add(name=layer_name)
+            entity.dxf.layer = layer_name
 
-        msp = target_dxf.modelspace()
-        msp.add_blockref(target_name, insert=(10, 10))
-
-    else:
-        if dxf_option == 'Layers':
-            source_dxf.layers.new(name=target_name)
-            target_dxf.layers.new(name=target_name)
-            for entity in source_dxf.entities:
-                entity.dxf.layer = target_name
-
-        importer = Importer(source_dxf, target_dxf)
-        importer.import_modelspace()
-        # importer.import_entities(source_dxf.entities)
-        importer.finalize()
+    importer = Importer(dwg, target_drawing)
+    importer.import_entities(dwg.entities)
 
 
 @apper.lib_import(config.lib_path)
 def create_empty_dxf():
-    check_dependency('ezdxf', 'ezdxf')
+    check_dependency("ezdxf", "ezdxf")
     import ezdxf
 
-    new_dwg = ezdxf.new(dxfversion='AC1015')
+    new_dwg = ezdxf.new(dxfversion="AC1015")
     return new_dwg
 
 
 @apper.lib_import(config.lib_path)
-def export_pdf(dxf_file):
-    check_dependency('matplotlib', 'ezdxf[draw]')
+def export_pdf(dxf_file_path):
+    check_dependency("matplotlib", "ezdxf[draw]")
     import ezdxf
     from ezdxf.addons.drawing import matplotlib
 
-    dwg = ezdxf.readfile(dxf_file)
-    pdf_file_name = f'{dxf_file[:-4]}.pdf'
-    matplotlib.qsave(dwg.modelspace(), pdf_file_name)
+    dwg = ezdxf.readfile(dxf_file_path)
+    base_file_path = Path(dxf_file_path).stem
+    pdf_file_path = f"{base_file_path}.pdf"
+
+    matplotlib.qsave(dwg.modelspace(), pdf_file_path)
 
 
 def make_offset_sketch(face: adsk.fusion.BRepFace, offset: float):
@@ -99,7 +89,9 @@ def make_offset_sketch(face: adsk.fusion.BRepFace, offset: float):
     if sketch.profiles.count > 1:
         profile: adsk.fusion.Profile
         for profile in sketch.profiles:
-            this_length = profile.boundingBox.minPoint.distanceTo(profile.boundingBox.maxPoint)
+            this_length = profile.boundingBox.minPoint.distanceTo(
+                profile.boundingBox.maxPoint
+            )
             if this_length > length:
                 outer_profile = profile
                 length = this_length
@@ -134,33 +126,31 @@ def export_face_as_dxf(face, offset_option, offset_value) -> str:
     else:
         sketch = sketches.add(face)
 
-    file_name = get_file_name(face, 'dxf')
-    sketch.saveAsDXF(file_name)
+    dxf_file_path = get_file_name(face, "dxf")
+    sketch.saveAsDXF(dxf_file_path)
     sketch.deleteMe()
-    return file_name
-
-
-def name_check(name, counter) -> str:
-    if os.path.exists(name):
-        new_name = f'{name[:name.rfind("_")]}_{counter}.{name[-3:]}'
-        counter += 1
-        name = name_check(new_name, counter)
-
-    return name
+    return dxf_file_path
 
 
 def get_file_name(face: adsk.fusion.BRepFace, extension) -> str:
-    name = f'{face.body.parentComponent.partNumber}-{face.body.name}_0.{extension}'
-    new_name = os.path.join(get_output_path(), name)
+    face_name = get_face_name(face)
 
-    name = name_check(new_name, 1)
+    counter = 0
+    base_file_path = os.path.join(get_output_path(), face_name)
+    while os.path.exists(f"{base_file_path}_{counter}.{extension}"):
+        counter += 1
 
+    return f"{base_file_path}_{counter}.{extension}"
+
+
+def get_face_name(face):
+    name = f"{face.body.parentComponent.partNumber}-{face.body.name}-{face.tempId}"
     return name
 
 
 def get_output_path() -> str:
     ao = apper.AppObjects()
-    dir_name = f'{ao.document.dataFile.name}'
+    dir_name = f"{ao.document.dataFile.name}"
     output_path = os.path.join(apper.get_default_dir(config.app_name), dir_name, "")
 
     # Create the folder if it does not exist
@@ -177,46 +167,62 @@ def build_common_inputs(inputs: adsk.core.CommandInputs):
     # default_file_name = os.path.join(apper.get_default_dir(config.app_name), doc_name)
     # inputs.addStringValueInput('file_name_input', 'File Name: ', default_file_name)
 
-    selection_input = inputs.addSelectionInput('faces', 'Select Faces: ', 'Select faces to add to dxf output')
-    selection_input.addSelectionFilter('PlanarFaces')
+    selection_input = inputs.addSelectionInput(
+        "faces", "Select Faces: ", "Select faces to add to dxf output"
+    )
+    selection_input.addSelectionFilter("PlanarFaces")
     selection_input.setSelectionLimits(1, 0)
 
-    inputs.addBoolValueInput('offset_option', 'Create Offset', True, '', True)
+    inputs.addBoolValueInput("offset_option", "Create Offset", True, "", True)
 
     offset_value = adsk.core.ValueInput.createByReal(config.default_offset)
     units = ao.units_manager.defaultLengthUnits
-    offset_value = inputs.addValueInput('offset_value', 'Offset Value', units, offset_value)
-    offset_value.tooltip = 'Adjust for Kerf width for Laser and Water Jet applications'
-    offset_value.tooltipDescription = '<br><h2>Note!</h2><br>' \
-                                      'Offset value is the amount of offset applied outwards to the existing edges' \
-                                      '<br>' \
-                                      '<i>For a laser cutter this would typically be defined as: kerf / 2</i>'
+    offset_value = inputs.addValueInput(
+        "offset_value", "Offset Value", units, offset_value
+    )
+    offset_value.tooltip = "Adjust for Kerf width for Laser and Water Jet applications"
+    offset_value.tooltipDescription = (
+        "<br><h2>Note!</h2><br>"
+        "Offset value is the amount of offset applied outwards to the existing edges"
+        "<br>"
+        "<i>For a laser cutter this would typically be defined as: kerf / 2</i>"
+    )
 
 
 def build_dxf_export_inputs(inputs: adsk.core.CommandInputs):
-    inputs.addBoolValueInput('dxf_combine_option', 'Combine to single DXF?', True, '', True)
+    inputs.addBoolValueInput(
+        "dxf_combine_option", "Combine to single DXF?", True, "", True
+    )
 
-    dxf_option_title = inputs.addTextBoxCommandInput('dxf_option_title', '', 'Face organization', 1, True)
+    dxf_option_title = inputs.addTextBoxCommandInput(
+        "dxf_option_title", "", "Face organization", 1, True
+    )
     dxf_option_title.isVisible = True
 
-    dxf_option_group = inputs.addRadioButtonGroupCommandInput('dxf_option_group', '')
-    dxf_option_group.listItems.add('Blocks', True)
-    dxf_option_group.listItems.add('Layers', False)
-    dxf_option_group.listItems.add('Flat', False)
+    dxf_option_group = inputs.addRadioButtonGroupCommandInput("dxf_option_group", "")
+    dxf_option_group.listItems.add("Blocks", True)
+    dxf_option_group.listItems.add("Layers", False)
+    dxf_option_group.listItems.add("Flat", False)
     dxf_option_group.isVisible = True
 
-    dxf_warning_text = '<br><h3>Note!</h3><br>' \
-                       'All faces will be moved to origin in output DXF<br><br>' \
-                       '<i>Depending on orientation of the face, the results may be unpredictable</i>'
-    dxf_warning = inputs.addTextBoxCommandInput('dxf_warning', '', dxf_warning_text, 10, True)
+    dxf_warning_text = (
+        "<br><h3>Note!</h3><br>"
+        "All faces will be moved to origin in output DXF<br><br>"
+        "<i>Depending on orientation of the face, the results may be unpredictable</i>"
+    )
+    dxf_warning = inputs.addTextBoxCommandInput(
+        "dxf_warning", "", dxf_warning_text, 10, True
+    )
     dxf_warning.isVisible = True
 
 
 def update_dxf_combine_option(inputs: adsk.core.CommandInputs):
-    dxf_option_group = inputs.itemById('dxf_option_group')
-    dxf_warning = inputs.itemById('dxf_warning')
-    dxf_option_title = inputs.itemById('dxf_option_title')
-    dxf_combine_option: adsk.core.BoolValueCommandInput = inputs.itemById('dxf_combine_option')
+    dxf_option_group = inputs.itemById("dxf_option_group")
+    dxf_warning = inputs.itemById("dxf_warning")
+    dxf_option_title = inputs.itemById("dxf_option_title")
+    dxf_combine_option: adsk.core.BoolValueCommandInput = inputs.itemById(
+        "dxf_combine_option"
+    )
 
     if dxf_combine_option.value:
         dxf_option_group.isVisible = True
@@ -229,60 +235,62 @@ def update_dxf_combine_option(inputs: adsk.core.CommandInputs):
 
 
 class DXFExportCommand(apper.Fusion360CommandBase):
-
     def on_execute(self, command, inputs, args, input_values):
         ao = apper.AppObjects()
 
-        dxf_option = input_values['dxf_option_group']
-        dxf_combine_option = input_values['dxf_combine_option']
-        offset_option = input_values['offset_option']
-        offset_value = input_values['offset_value']
+        dxf_option = input_values["dxf_option_group"]
+        dxf_combine_option = input_values["dxf_combine_option"]
+        offset_option = input_values["offset_option"]
+        offset_value = input_values["offset_value"]
 
         target_drawing = create_empty_dxf()
 
-        index = 0
         face: adsk.fusion.BRepFace
-        for face in input_values['faces']:
-            dxf_file = export_face_as_dxf(face, offset_option, offset_value)
+        for face in input_values["faces"]:
+            dxf_file_path = export_face_as_dxf(face, offset_option, offset_value)
 
             if dxf_combine_option:
-                add_to_dxf(dxf_file, dxf_option, target_drawing, f'Face_{index}')
-                os.remove(dxf_file)
-            index += 1
+                add_to_dxf(dxf_file_path, dxf_option, target_drawing)
+                os.remove(dxf_file_path)
 
         if dxf_combine_option:
             file_path = get_output_path()
-            file_name = f'{file_path[:-1]}.dxf'
+
+            Path(
+                get_output_path(),
+            )
+            file_name = f"{file_path[:-1]}.dxf"
             target_drawing.saveas(file_name)
 
-            ao.ui.messageBox(f'DXF File exported to: <br>{file_name}')
+            ao.ui.messageBox(f"DXF File exported to: <br>{file_name}")
 
         else:
-            ao.ui.messageBox(f'All DXF Files were exported to: <br>{get_output_path()}')
+            ao.ui.messageBox(f"All DXF Files were exported to: <br>{get_output_path()}")
 
     def on_create(self, command: adsk.core.Command, inputs: adsk.core.CommandInputs):
         build_common_inputs(inputs)
         build_dxf_export_inputs(inputs)
 
-    def on_input_changed(self, command, inputs: adsk.core.CommandInputs, changed_input, input_values):
-        if changed_input.id == 'dxf_combine_option':
+    def on_input_changed(
+        self, command, inputs: adsk.core.CommandInputs, changed_input, input_values
+    ):
+        if changed_input.id == "dxf_combine_option":
             update_dxf_combine_option(inputs)
 
 
 class PDFExportCommand(apper.Fusion360CommandBase):
-
     def on_execute(self, command, inputs, args, input_values):
-        offset_option = input_values['offset_option']
-        offset_value = input_values['offset_value']
+        offset_option = input_values["offset_option"]
+        offset_value = input_values["offset_value"]
 
         face: adsk.fusion.BRepFace
-        for face in input_values['faces']:
-            dxf_file = export_face_as_dxf(face, offset_option, offset_value)
-            export_pdf(dxf_file)
-            os.remove(dxf_file)
+        for face in input_values["faces"]:
+            dxf_file_path = export_face_as_dxf(face, offset_option, offset_value)
+            export_pdf(dxf_file_path)
+            os.remove(dxf_file_path)
+
         ao = apper.AppObjects()
-        ao.ui.messageBox(f'PDF File(s) were exported to: <br>{get_output_path()}')
+        ao.ui.messageBox(f"PDF File(s) were exported to: <br>{get_output_path()}")
 
     def on_create(self, command: adsk.core.Command, inputs: adsk.core.CommandInputs):
-
         build_common_inputs(inputs)
